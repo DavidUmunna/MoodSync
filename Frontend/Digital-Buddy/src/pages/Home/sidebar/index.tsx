@@ -14,7 +14,13 @@ export default function SidebarHome(){
                           <FileText className="h-5 w-5 mr-2"/>
                           <label className="ml-2">Mood Logs</label>
                      </div>
-                   </button>    
+                   </button>
+                   <button className="hover:bg-blue-600 hover:rounded-2xl hover:p-1 hover:px-3" >
+                     <div className="flex ">
+                          <Lightbulb className="h-5 w-5 mr-2"/>
+                          <label className="ml-2">Suggestions</label>
+                     </div>
+                   </button>     
     
             </div>
         </div>
