@@ -1,0 +1,20 @@
+
+
+
+
+services:
+    postgres:
+      image: postgres:18
+      container_name: MoodSync_data
+      restart: unless-stopped
+      environment: 
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: resources
+      ports:
+       - "5434:5432"
+      volumes:
+      - MoodSync_data_2:/data/db
+volumes:
+    MoodSync_data_2:
+       
