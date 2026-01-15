@@ -1,24 +1,23 @@
-from fastapi import APIRouter,status,HTTPException,Depends,Response,Request
-from passlib.context import CryptContext
+from fastapi import APIRouter, status, HTTPException, Depends, Response, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from app.models.users import User
-from odmantic import AIOEngine
-from pydantic import BaseModel,EmailStr
+from app.core.database import get_db
+from pydantic import BaseModel, EmailStr
 import uuid
 import os
 import regex as re
 import bcrypt
+import hashlib
 from app.middlewares.ratelimiter import rate_limiter
 from app.core.redis_Client import redisClient
 import json
 
 
-
-window_seconds=30*60
-limit=100
+window_seconds = 30 * 60
+limit = 100
 
 router = APIRouter(prefix="/users", tags=["Users"])
-engine=AIOEngine()
-
 
 
 @router.get("/cache-test")
@@ -28,106 +27,126 @@ async def cache_test():
     return {"cached_value": val}
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt with SHA256 pre-hashing."""
+    prehashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(prehashed.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
+
+
+def verify_password(password: str, hashed_password: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    prehashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    return bcrypt.checkpw(prehashed.encode('utf-8'), hashed_password.encode('utf-8'))
+
+
 class userCreate(BaseModel):
-    firstname:str
-    lastname:str
-    email:EmailStr
-    password:str
+    firstname: str
+    lastname: str
+    email: EmailStr
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
 
 @router.get("/")
 async def get_users():
-    #A dummy
+    # A dummy
     return [{"id": 1, "name": "John Doe"}]
 
-@router.get("/")
-async def getUserData():
+
+@router.post("/createuser", status_code=status.HTTP_201_CREATED)
+async def CreateUser(user: userCreate, db: AsyncSession = Depends(get_db)):
     try:
-       return {"message":"this is a message"}
-
-    except HTTPException as httperror:
-        return httperror
-    
-
-
-
-
-@router.post("/createuser",status_code=status.HTTP_201_CREATED)
-async def CreateUser(user:userCreate):
-    try:
-        existing_user=await  engine.find_one(User,User.email==user.email)
-        if(existing_user):
+        # SQLAlchemy: Check if user exists
+        result = await db.execute(
+            select(User).where(User.email == user.email)
+        )
+        existing_user = result.scalar_one_or_none()
+        
+        if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="User with this email already exists"
             )
         
-        hashed_password=pwd_context.hash(user.password)
+        # Hash the password
+        hashed_password = hash_password(user.password)
 
-        new_User=User(
+        # SQLAlchemy: Create new user
+        new_user = User(
             first_name=user.firstname,
             last_name=user.lastname,
             email=user.email,
             password_hash=hashed_password
         )
-
-        await engine.save(new_User)
+        
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)  # Refresh to get the generated user_id
 
         return {
             "message": "User created successfully",
             "user": {
-                "id": str(new_User.id),
-                "first_name": new_User.first_name,
-                "last_name": new_User.last_name,
-                "email": new_User.email
+                "id": str(new_user.user_id),
+                "first_name": new_user.first_name,
+                "last_name": new_user.last_name,
+                "email": new_user.email
             }
         }
     except HTTPException as httperror:
         raise httperror
     except Exception as e:
-        # Catch any unexpected error
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {str(e)}"
         )
 
 
-class LoginRequest(BaseModel):
-    email:EmailStr
-    password:str
-    
-
-
 @router.post("/signin", dependencies=[Depends(rate_limiter)])
-async def userSignIn(request:LoginRequest,response:Response):
+async def userSignIn(
+    request: LoginRequest, 
+    response: Response, 
+    db: AsyncSession = Depends(get_db)
+):
     try:
-        existing_user=await  engine.find_one(User,User.email==request.email)
-
-        if not re.fullmatch(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}$",request.email):
+        # Validate email format
+        if not re.fullmatch(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}$", request.email):
             raise HTTPException(
                 400,
                 detail="the username you entered is not valid"
             )
-        if not existing_user :
+        
+        # SQLAlchemy: Get user from database
+        result = await db.execute(
+            select(User).where(User.email == request.email)
+        )
+        existing_user = result.scalar_one_or_none()
+        
+        if not existing_user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="user was not found "
+                detail="user was not found"
             )
-        
-        if not existing_user or not bcrypt.verify(request.password, existing_user["password"]):
-           raise HTTPException(status_code=401, detail="Invalid email or password")
 
+        # Verify password
+        if not verify_password(request.password, existing_user.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        
-        sessionId=uuid.uuid4()
+        # Create session
+        sessionId = uuid.uuid4()
 
         json_string = json.dumps({
-            "userId": existing_user["_id"],
-            "role": existing_user["role"],
-            "email": existing_user["email"],
-            "name": existing_user["name"],
-            "createdAt": existing_user["createdAt"]
-            })
+            "userId": str(existing_user.user_id),
+            "email": existing_user.email,
+            "firstName": existing_user.first_name,
+            "lastName": existing_user.last_name,
+        })
 
         await redisClient.set(
             f"session:{sessionId}",
@@ -141,50 +160,56 @@ async def userSignIn(request:LoginRequest,response:Response):
     
         response.set_cookie(
             key="sessionId",
-            value=sessionId,
+            value=str(sessionId),
             httponly=True,
-            max_age=20*60,
+            max_age=20 * 60,
             samesite=same_site,
             secure=secure
         )
+        
         return {
             "success": True,
             "message": "Login successful",
             "user": {
-                "userId": existing_user["_id"],
-                "role": existing_user["role"],
-                "email": existing_user["email"],
-                "name": existing_user["name"],
-                "canApprove": existing_user["canApprove"],
-                "Department": existing_user["Department"],
-                "createdAt": existing_user["createdAt"].isoformat()  # convert datetime to ISO string
+                "userId": str(existing_user.user_id),
+                "email": existing_user.email,
+                "firstName": existing_user.first_name,
+                "lastName": existing_user.last_name,
+                "createdAt": existing_user.createdAt.isoformat()
             }
-         }
-
-    
+        }
 
     except HTTPException as httperror:
-        return httperror
-    except Exception:
+        raise httperror
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server Error"
+            detail=f"Server Error: {str(e)}"
         )
 
 
-        
 @router.post("/signout")
-async def SignOut(request: Request, response: Response):
+async def SignOut(
+    request: Request, 
+    response: Response, 
+    db: AsyncSession = Depends(get_db)
+):
     try:
         data = await request.json()
         user_id = data.get("userId")
 
-        # Validate userId format (24-char hex string)
-        if not user_id or not re.fullmatch(r"[0-9A-Fa-f]{24}", user_id):
+        # Validate userId format (UUID)
+        try:
+            user_uuid = uuid.UUID(user_id)
+        except Exception:
             raise HTTPException(status_code=400, detail="userId is not valid")
 
-        # Check if admin user exists
-        admin_user = await User.get_or_none(id=user_id)
+        # SQLAlchemy: Check if user exists
+        result = await db.execute(
+            select(User).where(User.user_id == user_uuid)
+        )
+        admin_user = result.scalar_one_or_none()
+        
         if not admin_user:
             raise HTTPException(status_code=404, detail="User Id not found")
 
@@ -211,14 +236,3 @@ async def SignOut(request: Request, response: Response):
     except Exception as e:
         print("Logout error:", e)
         raise HTTPException(status_code=500, detail="Server error detected")
-
-           
-        
-        
-        
-
-
-
-
-
-    

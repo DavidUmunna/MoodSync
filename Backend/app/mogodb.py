@@ -3,7 +3,7 @@ import pymongo as pm
 
 from pymongo import MongoClient, errors
 
-def connectDB(uri="mongodb://localhost:27017", db_name=None):
+def connectDB(uri="mongodb://localhost:2701/moodsync", db_name=None):
     
     try:
         # Attempt connection with a timeout

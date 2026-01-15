@@ -1,6 +1,6 @@
 TORTOISE_ORM = {
     "connections": {
-        "default": "postgres://postgres:password@localhost:5432/moodsync"
+        "default": "postgres://moodsyncAdmin:Halden101@localhost:5432/moodsync"
     },
     "apps": {
         "models": {

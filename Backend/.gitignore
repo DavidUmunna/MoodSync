@@ -1,2 +1,5 @@
 digitalBuddy
 __pycache__
+moodsyncenv/
+env
+.moodsyncenv/

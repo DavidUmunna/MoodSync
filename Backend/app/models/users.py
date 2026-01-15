@@ -1,40 +1,68 @@
-from tortoise import fields, models
+"""
+User model example showing the relationship with AuthSession.
+Update your existing app/models/users.py to include the auth_sessions relationship.
+"""
 import uuid
-import bcrypt
-
-class User(models.Model):
-    user_id = fields.UUIDField(pk=True,default=uuid.uuid4)
-    first_name = fields.CharField(max_length=50)
-    last_name = fields.CharField(max_length=50)
-    email = fields.CharField(max_length=100,unique=True)
-    password_hash=fields.CharField(max_length=128),
-    createdAt=fields.DatetimeField(auto_now_add=True)
-    updatedAt = fields.DatetimeField(auto_now=True)
-
-class Meta:
-    table=User
-
-  # Automatically hash before saving
-    async def save(self, *args, **kwargs):
-        # Only hash if it's not already hashed
-        if not self.password_hash.startswith("$2b$"):
-            self.password_hash = bcrypt.hash(self.password_hash)
-        await super().save(*args, **kwargs)
-
-    # Verify password
-    def verify_password(self, password: str) -> bool:
-        return bcrypt.verify(password, self.password_hash)
+from datetime import datetime, timezone
+from sqlalchemy import String, Boolean, DateTime
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.models.base import Base
+from typing import TYPE_CHECKING
+from sqlalchemy.orm import relationship
 
 
-#async def run():
-#    await Tortoise.init(
-#        db_url="postgres://username:password@localhost:5432/mydatabase",
-#        modules={"models": ["__main__"]}
-#    )
-#    await Tortoise.generate_schemas()
-#    await User.create(name="Chima", email="chima@example.com")
-#    user = await User.get(name="Chima")
-#    print(user.email)
-#    await Tortoise.close_connections()
-#
-#run_async(run())
+if TYPE_CHECKING:
+    from app.models.auth_session import AuthSession
+
+
+class User(Base):
+    """User model for storing user account information."""
+    
+    __tablename__ = "users"
+    
+    # Primary key
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4
+    )
+    
+    # User information
+    first_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    email: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        unique=True,
+        index=True
+    )
+    
+    # Authentication
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    # Account status
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    
+    # Timestamps
+    createdAt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+    
+    updatedAt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+    
+    # Relationships
+    auth_sessions: Mapped[list["AuthSession"]] = relationship(
+        "AuthSession",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    
+    def __repr__(self):
+        return f"<User(id={self.user_id}, email={self.email})>"
